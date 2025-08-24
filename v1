@@ -1,0 +1,73 @@
+import argparse
+import asyncio
+import time
+
+# this is to parse commands_line from files
+def load_commands_line(path):
+    commands_line = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            name, duration, dep_var = line.split(",", 2)
+            name = name.strip()
+            duration = int(duration.strip())
+            dep_var = dep_var.strip()[1:-1].split() if dep_var.strip() != "[]" else []
+            commands_line[name] = {"duration": duration, "dep_var": dep_var}
+    return commands_line
+
+# Calculate expected runtime_difftime (longest dependency items)
+def expected_runtime_difftime(commands_line):
+    record = {}
+
+    def dfs(task):
+        if task in record:
+            return record[task]
+        dur = commands_line[task]["duration"]
+        if not commands_line[task]["dep_var"]:
+            record[task] = dur
+        else:
+            record[task] = dur + max(dfs(d) for d in commands_line[task]["dep_var"])
+        return record[task]
+
+    return max(dfs(t) for t in commands_line)
+
+# ---- Async runtime_diff commands_line ----
+async def runtime_diff_commands_line(commands_line):
+    events = {t: asyncio.Event() for t in commands_line}
+
+    async def worker(name, duration, dep_var):
+        # Wait for all dependencies
+        for d in dep_var:
+            await events[d].wait()
+        print(f"[run_cli] {name} (duration {duration}s)")
+        await asyncio.sleep(duration)
+        print(f"[complete_cli] {name}")
+        events[name].set()
+
+    await asyncio.gather(*(worker(n, t["duration"], t["dep_var"]) for n, t in commands_line.items()))
+
+# ---- Main CLI ----
+def main():
+    parser = argparse.ArgumentParser(description="Task scheduler for Arista commands")
+    parser.add_argument("file", help="Task list file")
+    parser.add_argument("--validate_input_output", action="store_true", help="validate_input_output and show expected runtime_difftime")
+    parser.add_argument("--runtime_diff", action="store_true", help="runtime_diff commands_line and show actual vs expected runtime_difftime")
+    args = parser.parse_args()
+
+    commands_line = load_commands_line(args.file)
+    exp = expected_runtime_difftime(commands_line)
+
+    if args.validate_input_output:
+        print(f"Expected runtime_difftime = {exp} sec")
+
+    if args.runtime_diff:
+        print(f"Expected runtime_difftime = {exp} sec")
+        start = time.perf_counter()
+        asyncio.runtime_diff(runtime_diff_commands_line(commands_line))
+        actual = time.perf_counter() - start
+        print(f"Actual runtime_difftime = {actual:.2f} sec (diff {actual - exp:+.2f})")
+
+if __name__ == "__main__":
+    main()
